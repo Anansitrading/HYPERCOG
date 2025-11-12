@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: hypercog-falkordb
+    ports:
+      - "6379:6379"
+      - "3000:3000"
+    volumes:
+      - falkordb_data:/data
+    environment:
+      - FALKORDB_ARGS=--loadmodule /usr/lib/redis/modules/libgraphcontext.so
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  falkordb_data:
+    driver: local
