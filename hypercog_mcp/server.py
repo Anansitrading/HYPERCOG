@@ -2,24 +2,39 @@
 import asyncio
 import json
 import sys
+import signal
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+import structlog
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import load_environment, setup_cognee
 from .orchestrator import HyperCogOrchestrator
 from .llm_client import LLMClient
+from .utils.logging import setup_logging
+
+logger = setup_logging(log_level="INFO")
 
 app = Server("hypercog-mcp")
 
 storage_root = Path(__file__).parent / "storage"
 storage_root.mkdir(parents=True, exist_ok=True)
 
-orchestrator: HyperCogOrchestrator = None
-llm_client: LLMClient = None
+orchestrator: Optional[HyperCogOrchestrator] = None
+llm_client: Optional[LLMClient] = None
+shutdown_event = asyncio.Event()
+
+class EnrichInput(BaseModel):
+    """Validated input for hypercog_enrich tool"""
+    task: str = Field(..., min_length=1, max_length=10000, description="Task description")
+    session_context: str = Field(..., min_length=1, description="Session context")
+    attached_files: list[Dict[str, str]] = Field(default_factory=list)
+    workspace_path: Optional[str] = None
+    user_intent: Optional[str] = None
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
@@ -78,22 +93,54 @@ ALL paths converge at mandatory optimization before execution.
 
 @app.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-    """Handle tool calls"""
+    """
+    Handle tool calls with input validation
+    
+    CRITICAL: Never log to stdout in STDIO MCP servers
+    All logs go to stderr via structlog
+    """
+    log = logger.bind(tool=name)
     
     if name != "hypercog_enrich":
-        raise ValueError(f"Unknown tool: {name}")
+        error_msg = f"Unknown tool: {name}"
+        log.error("unknown_tool", tool=name)
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": error_msg,
+                    "status": "failed"
+                }, indent=2)
+            )
+        ]
     
-    task = arguments.get("task", "")
+    try:
+        validated = EnrichInput(**arguments)
+        log.info("tool_invoked", task_length=len(validated.task))
+        
+    except ValidationError as e:
+        log.error("input_validation_failed", errors=e.errors())
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": "Input validation failed",
+                    "details": e.errors(),
+                    "status": "failed"
+                }, indent=2)
+            )
+        ]
     
     context = {
-        "session_context": arguments.get("session_context", ""),
-        "attached_files": arguments.get("attached_files", []),
-        "workspace_path": arguments.get("workspace_path"),
-        "user_intent": arguments.get("user_intent")
+        "session_context": validated.session_context,
+        "attached_files": validated.attached_files,
+        "workspace_path": validated.workspace_path,
+        "user_intent": validated.user_intent
     }
     
     try:
-        result = await orchestrator.enrich(task, context)
+        result = await orchestrator.enrich(validated.task, context)
+        log.info("tool_completed", status=result.get("status"))
         
         return [
             TextContent(
@@ -102,7 +149,20 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             )
         ]
     
+    except asyncio.TimeoutError:
+        log.error("tool_timeout")
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": "Enrichment timeout - operation took too long",
+                    "status": "failed"
+                }, indent=2)
+            )
+        ]
+    
     except Exception as e:
+        log.exception("tool_failed", error=str(e))
         return [
             TextContent(
                 type="text",
@@ -113,27 +173,44 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             )
         ]
 
+def handle_shutdown(signum, frame):
+    """Handle shutdown signals"""
+    logger.info("shutdown_signal_received", signal=signum)
+    shutdown_event.set()
+
 async def main():
-    """Main entry point"""
+    """Main entry point with graceful shutdown"""
     global orchestrator, llm_client
     
-    print("🚀 Starting HyperCog MCP Server...", file=sys.stderr)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
     
-    load_environment()
+    logger.info("hypercog_mcp_starting")
     
     try:
-        setup_cognee()
+        load_environment()
+        
+        try:
+            setup_cognee()
+            logger.info("cognee_initialized")
+        except Exception as e:
+            logger.warning("cognee_setup_failed", error=str(e))
+            logger.info("continuing_without_cognee")
+        
+        llm_client = LLMClient()
+        orchestrator = HyperCogOrchestrator(storage_root, llm_client)
+        
+        logger.info("hypercog_mcp_ready")
+        
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(read_stream, write_stream, app.create_initialization_options())
+    
     except Exception as e:
-        print(f"⚠ Cognee setup warning: {e}", file=sys.stderr)
-        print("Continuing without Cognee integration", file=sys.stderr)
+        logger.exception("server_startup_failed", error=str(e))
+        sys.exit(1)
     
-    llm_client = LLMClient()
-    orchestrator = HyperCogOrchestrator(storage_root, llm_client)
-    
-    print("✓ HyperCog MCP Server ready", file=sys.stderr)
-    
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+    finally:
+        logger.info("hypercog_mcp_shutdown_complete")
 
 if __name__ == "__main__":
     asyncio.run(main())
