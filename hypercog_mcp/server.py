@@ -11,17 +11,31 @@ if env_path.exists():
     load_dotenv(env_path, override=True)
 
 # CRITICAL: MCP stdio servers MUST NOT write to stdout except JSON-RPC messages
-# Redirect all output to stderr to prevent protocol corruption
-class StderrOnly:
-    """Redirect all writes to stderr"""
+# We need to preserve the original stdout for MCP protocol
+# but redirect any accidental prints to stderr
+original_stdout = sys.stdout
+
+class StderrRedirect:
+    """Redirect text writes to stderr while preserving buffer for MCP"""
+    def __init__(self):
+        self.buffer = original_stdout.buffer  # MCP needs this
+        self.encoding = original_stdout.encoding
+        self.errors = original_stdout.errors
+    
     def write(self, text):
+        # Redirect text writes to stderr
         sys.stderr.write(text)
         return len(text)
+    
     def flush(self):
         sys.stderr.flush()
+        
+    def __getattr__(self, name):
+        # Pass through any other attributes to original stdout
+        return getattr(original_stdout, name)
 
-# Replace stdout with stderr before ANY imports that might print
-sys.stdout = StderrOnly()
+# Replace stdout but keep buffer accessible for MCP
+sys.stdout = StderrRedirect()
 
 # Set environment to suppress any library output to stdout
 os.environ['PYTHONUNBUFFERED'] = '1'
