@@ -2,16 +2,33 @@
 # CRITICAL: Load environment variables FIRST, before any other imports
 from pathlib import Path
 from dotenv import load_dotenv
+import sys
+import os
 
 # Load .env immediately to ensure all environment variables are available
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path, override=True)
 
+# CRITICAL: MCP stdio servers MUST NOT write to stdout except JSON-RPC messages
+# Redirect all output to stderr to prevent protocol corruption
+class StderrOnly:
+    """Redirect all writes to stderr"""
+    def write(self, text):
+        sys.stderr.write(text)
+        return len(text)
+    def flush(self):
+        sys.stderr.flush()
+
+# Replace stdout with stderr before ANY imports that might print
+sys.stdout = StderrOnly()
+
+# Set environment to suppress any library output to stdout
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 # Now safe to import modules that depend on environment variables
 import asyncio
 import json
-import sys
 import signal
 from typing import Any, Dict, Optional
 import structlog
