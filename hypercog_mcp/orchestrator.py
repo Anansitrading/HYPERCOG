@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import structlog
@@ -80,11 +81,12 @@ class HyperCogOrchestrator:
         
         log = log.bind(session_id=session_id)
         
-        evaluation = await self.evaluator.execute({
-            "task": task,
-            "current_context": current_context,
-            "metadata": extraction_result["metadata"]
-        })
+        # Run enhanced evaluation with Perplexity validation
+        evaluation = await self._run_evaluator_with_perplexity(
+            extraction_result,
+            task,
+            current_context
+        )
         
         if evaluation["sufficient"]:
             log.info("context_sufficient", confidence=evaluation.get("confidence"))
@@ -271,3 +273,41 @@ class HyperCogOrchestrator:
                 })
         
         return results
+    
+    async def _run_evaluator_with_perplexity(
+        self,
+        extraction_result: Dict[str, Any],
+        task: str,
+        current_context: str
+    ) -> Dict[str, Any]:
+        """
+        Run evaluator with enhanced Perplexity validation enabled.
+        
+        Args:
+            extraction_result: Result from context extraction
+            task: User's task/prompt
+            current_context: Extracted session context
+            
+        Returns:
+            Enhanced evaluation result with external validation
+        """
+        enable_perplexity = os.getenv("ENABLE_PERPLEXITY_VALIDATION", "true").lower() == "true"
+        
+        evaluation = await self.evaluator.evaluate(
+            session_context=current_context,
+            attached_files=extraction_result.get("attached_files", []),
+            workspace_info=extraction_result.get("workspace_info"),
+            user_intent=task,
+            current_prompt=task,
+            enable_perplexity=enable_perplexity
+        )
+        
+        logger.info(
+            "evaluation_complete",
+            sufficient=evaluation["sufficient"],
+            confidence=evaluation.get("confidence", 0),
+            external_validation="enabled" if enable_perplexity else "disabled",
+            has_perplexity_sources=bool(evaluation.get("perplexity_sources"))
+        )
+        
+        return evaluation
