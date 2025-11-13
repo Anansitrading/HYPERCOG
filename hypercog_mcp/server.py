@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
+# CRITICAL: Load environment variables FIRST, before any other imports
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env immediately to ensure all environment variables are available
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
+
+# Now safe to import modules that depend on environment variables
 import asyncio
 import json
 import sys
 import signal
-from pathlib import Path
 from typing import Any, Dict, Optional
 import structlog
 
@@ -12,7 +21,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 from pydantic import BaseModel, Field, ValidationError
 
-from .config import load_environment, setup_cognee
+from .config import setup_cognee
 from .orchestrator import HyperCogOrchestrator
 from .llm_client import LLMClient
 from .utils.logging import setup_logging
@@ -185,10 +194,31 @@ async def main():
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
     
-    logger.info("hypercog_mcp_starting")
+    import os
+    logger.info("hypercog_mcp_starting", 
+                env_file_exists=env_path.exists(),
+                env_file_path=str(env_path))
     
     try:
-        load_environment()
+        # Verify required environment variables
+        required_vars = ["OPENAI_API_KEY"]
+        optional_vars = ["PERPLEXITY_API_KEY", "GOOGLE_API_KEY"]
+        
+        missing = [var for var in required_vars if not os.getenv(var)]
+        missing_optional = [var for var in optional_vars if not os.getenv(var)]
+        
+        if missing:
+            logger.error("missing_required_env_vars", missing=missing)
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+        
+        if missing_optional:
+            logger.warning("missing_optional_env_vars", 
+                          missing=missing_optional,
+                          note="Some features may be disabled")
+        
+        logger.info("environment_validated",
+                   required_vars_present=len(required_vars),
+                   optional_vars_present=len(optional_vars) - len(missing_optional))
         
         try:
             setup_cognee()

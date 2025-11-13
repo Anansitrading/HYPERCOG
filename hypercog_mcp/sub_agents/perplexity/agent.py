@@ -10,7 +10,14 @@ class PerplexityAgent:
     def __init__(self):
         self.api_key = os.getenv("PERPLEXITY_API_KEY")
         if not self.api_key:
-            raise ValueError("PERPLEXITY_API_KEY not found in environment")
+            import warnings
+            warnings.warn(
+                "PERPLEXITY_API_KEY not found in environment. "
+                "Enhanced evaluator validation will be disabled. "
+                "Add PERPLEXITY_API_KEY to your .env file to enable external validation.",
+                UserWarning
+            )
+            self.api_key = None  # Allow initialization but disable functionality
         
         self.base_url = "https://api.perplexity.ai"
         self.model = "llama-3.1-sonar-large-128k-online"
@@ -35,6 +42,13 @@ class PerplexityAgent:
         Returns:
             Dict with 'answer' and 'citations' keys
         """
+        
+        if not self.api_key:
+            return {
+                "answer": "Perplexity validation unavailable - PERPLEXITY_API_KEY not configured",
+                "citations": [],
+                "model": "disabled"
+            }
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(

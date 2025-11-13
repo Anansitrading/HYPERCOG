@@ -21,9 +21,16 @@ class EvaluatorAgent(BaseAgent):
         """Lazy initialization of Perplexity agent"""
         if self.perplexity_agent is None:
             try:
-                self.perplexity_agent = PerplexityAgent()
-            except ValueError as e:
+                import warnings
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    self.perplexity_agent = PerplexityAgent()
+                    if w:
+                        for warning in w:
+                            self.log(f"Perplexity warning: {warning.message}", "WARNING")
+            except Exception as e:
                 self.log(f"Perplexity agent unavailable: {e}", "WARNING")
+                self.perplexity_agent = None
     
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
