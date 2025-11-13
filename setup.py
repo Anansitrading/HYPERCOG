@@ -16,7 +16,7 @@ setup(
         "aiofiles>=23.0.0",
         "pydantic>=2.0.0",
     ],
-    python_requires=">=3.11",
+    python_requires=">=3.10",
     entry_points={
         "console_scripts": [
             "hypercog=hypercog_mcp.cli:cli",
